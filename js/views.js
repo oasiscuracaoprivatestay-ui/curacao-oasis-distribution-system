@@ -1070,6 +1070,34 @@ Views.renderSettings = function() {
       </div>
     </div>
 
+    <div class="settings-section" style="border-color:var(--brand-teal);background:linear-gradient(135deg,#F0FAFA,#E8F8F8)">
+      <h3 style="color:var(--brand-teal)">💾 Backup &amp; Transfer</h3>
+      <p style="font-size:13.5px;color:var(--text-secondary);margin-bottom:16px;line-height:1.6">
+        Export a complete backup of all your data into a single <code>.json</code> file — then import it on any other browser or device (including the Vercel version). All your groups, content, history, and settings are included.
+      </p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div style="background:#fff;border:1.5px solid var(--brand-teal);border-radius:var(--radius-md);padding:18px">
+          <div style="font-size:22px;margin-bottom:8px">📦</div>
+          <div style="font-size:14px;font-weight:700;color:var(--text-primary);margin-bottom:4px">Export Full Backup</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:14px;line-height:1.5">
+            Downloads <code>cods-backup-[date].json</code> with all content, groups, history, plans &amp; settings.
+          </div>
+          <button class="btn btn-teal btn-block" onclick="Views.doExportBackup()">📦 Export Full Backup</button>
+        </div>
+        <div style="background:#fff;border:1.5px solid var(--brand-orange);border-radius:var(--radius-md);padding:18px">
+          <div style="font-size:22px;margin-bottom:8px">📂</div>
+          <div style="font-size:14px;font-weight:700;color:var(--text-primary);margin-bottom:4px">Import Backup</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:14px;line-height:1.5">
+            Upload a <code>.json</code> backup file to restore all data. <strong>Replaces</strong> existing data after confirmation.
+          </div>
+          <button class="btn btn-primary btn-block" onclick="Exporter.triggerImportBackup()">📂 Import Backup File</button>
+        </div>
+      </div>
+      <div class="alert alert-info" style="margin-top:14px">
+        💡 <strong>Transfer workflow:</strong> Export on this browser → send the <code>.json</code> file → Import on the other browser/device. Works across localhost, Vercel, or any browser.
+      </div>
+    </div>
+
     <div class="settings-section">
       <h3>📤 CSV Export</h3>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
@@ -1103,6 +1131,14 @@ Views.saveGptKey = function() {
   const key = document.getElementById('gptKey').value.trim();
   Store.saveSettings({ gptApiKey: key });
   App.toast('API key saved locally.', 'success');
+};
+
+Views.doExportBackup = function() {
+  const counts = Exporter.exportBackup();
+  App.toast(
+    `Backup exported! ${counts.groups} groups, ${counts.content} content items, ${counts.logs} history entries.`,
+    'success', 4000
+  );
 };
 
 Views.resetAllData = function() {
