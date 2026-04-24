@@ -722,6 +722,8 @@ Views.renderPlan = function() {
       </div>`).join('');
   }
 
+  const isConservative = !plan || plan.mode !== 'standard';
+  const modeLabel = isConservative ? '🛡️ Conservative (2/day)' : '⚡ Standard (up to 6/day)';
   const hasPlan = plan && (plan.morning.length > 0 || plan.evening.length > 0);
   const progressPct = flat.length > 0 ? Math.round(done/flat.length*100) : 0;
 
@@ -729,7 +731,7 @@ Views.renderPlan = function() {
     <div class="page-header">
       <div>
         <h1 class="page-title">Daily Plan</h1>
-        <div class="page-subtitle">${todayStr} · ${flat.length} posts planned · ${done} completed</div>
+        <div class="page-subtitle">${todayStr} · ${flat.length} posts · ${done} completed · <span style="color:var(--text-muted);font-size:12px">${modeLabel}</span></div>
       </div>
       <div class="page-actions">
         <button class="btn btn-ghost btn-sm" onclick="Exporter.exportPlans();App.toast('Plans exported!','success')">⬇️ Export CSV</button>
@@ -750,29 +752,28 @@ Views.renderPlan = function() {
     <div class="empty-state">
       <div class="empty-state-icon">📅</div>
       <div class="empty-state-title">No plan for today</div>
-      <div class="empty-state-desc">Generate a plan and the system will match your ready content to the best Facebook groups for today.</div>
+      <div class="empty-state-desc">Generate a plan — in Conservative mode you'll get 1 EN post and 1 NL post matched to fresh groups.</div>
       <button class="btn btn-primary btn-lg" onclick="Views.generatePlanNow()">📅 Generate Today's Plan</button>
     </div>` : `
-    <div class="alert alert-info">📌 This is a <strong>manual posting plan</strong>. Click <strong>Post</strong> to open the Posting Assistant, or <strong>Done</strong> to mark directly.</div>
+    <div class="alert alert-info">📌 <strong>Manual posting plan.</strong> Click <strong>Post</strong> to open the Posting Assistant, or <strong>Done</strong> to mark directly.</div>
 
     <div class="plan-session">
-      <div class="session-header">
-        <span style="font-size:22px">🌅</span>
-        <span class="session-label">Morning Session</span>
-        <div class="session-divider"></div>
-        <span class="session-count">${(plan.morning||[]).length} posts</span>
-      </div>
-      ${renderSession(plan.morning, 'morning')}
-    </div>
-
-    <div class="plan-session">
-      <div class="session-header">
-        <span style="font-size:22px">🌙</span>
-        <span class="session-label">Evening Session</span>
-        <div class="session-divider"></div>
-        <span class="session-count">${(plan.evening||[]).length} posts</span>
-      </div>
-      ${renderSession(plan.evening, 'evening')}
+      ${flat.map((item, globalIdx) => `
+        <div class="plan-item${item.done?' done':''}" id="pi-${item.session}-${item.index}">
+          <div class="plan-item-num">${item.done ? '✅' : (globalIdx + 1)}</div>
+          <div class="plan-item-body">
+            <div class="plan-item-group">${escHtml(item.groupName)}</div>
+            <div class="plan-item-content">${escHtml(item.contentTitle)} · ${langBadge(item.language)} ${typeBadge(item.type)}</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:4px">${escHtml((item.text||'').slice(0,80))}…</div>
+          </div>
+          <div class="plan-item-actions">
+            ${item.done
+              ? `<span class="badge badge-ready">Posted ✓</span>`
+              : `<button class="btn btn-primary btn-sm" onclick="App.navigate('assistant')">✉️ Post</button>
+                 <button class="btn btn-success btn-sm" onclick="Views.markDone('${todayStr}','${item.session}',${item.index})">✅ Done</button>`
+            }
+          </div>
+        </div>`).join('')}
     </div>
     `}`;
 };
@@ -786,10 +787,11 @@ Views.generatePlanNow = function() {
   setTimeout(() => {
     const plan = Planner.generatePlan();
     const total = (plan.morning||[]).length + (plan.evening||[]).length;
+    const modeInfo = plan.mode === 'conservative' ? '(Conservative: 1 EN + 1 NL)' : '(Standard mode)';
     if (total === 0) {
-      App.toast('No matching content/group pairs found. Check languages match.', 'warning');
+      App.toast('No matching content/group pairs found. Check that you have ready EN and NL content.', 'warning');
     } else {
-      App.toast(`Plan generated! ${total} posts scheduled.`, 'success');
+      App.toast(`Plan generated! ${total} posts scheduled ${modeInfo}`, 'success');
     }
     Views.renderPlan();
   }, 300);
@@ -806,16 +808,29 @@ Views.markDone = function(date, session, index) {
    ════════════════════════════════════════ */
 Views.renderAssistant = function() {
   const todayStr = Planner.today();
-  const plan = Store.getPlanForDate(todayStr);
-  const flat = plan ? Planner.getFlatPlan(plan) : [];
-  const pending = flat.filter(i => !i.done);
-  const done    = flat.filter(i =>  i.done);
+  const plan     = Store.getPlanForDate(todayStr);
+  const flat     = plan ? Planner.getFlatPlan(plan) : [];
+  const pending  = flat.filter(i => !i.done);
+  const done     = flat.filter(i =>  i.done);
 
   function escHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
   function langBadge(l){ return `<span class="badge badge-${l}">${(l||'').toUpperCase()}</span>`; }
   function typeBadge(t){ const ic={video:'🎥',reel:'🎬',image:'🖼️',text:'📝'}; return `<span class="badge badge-gray">${ic[t]||'📄'} ${t||''}</span>`; }
 
   const el = document.getElementById('view-assistant');
+
+  // ── Stale plan guard: plan exists but is from a previous day ──
+  if (plan && plan.date && plan.date !== todayStr) {
+    el.innerHTML = `
+      <div class="page-header"><div><h1 class="page-title">Posting Assistant</h1></div></div>
+      <div class="empty-state">
+        <div class="empty-state-icon">⏰</div>
+        <div class="empty-state-title">Plan is from ${plan.date}</div>
+        <div class="empty-state-desc">Your saved plan is outdated. Generate a fresh plan for today to continue posting.</div>
+        <button class="btn btn-primary btn-lg" onclick="Views.generatePlanNow();setTimeout(()=>App.navigate('assistant'),400)">📅 Generate Today's Plan</button>
+      </div>`;
+    return;
+  }
 
   if (flat.length === 0) {
     el.innerHTML = `
@@ -827,7 +842,7 @@ Views.renderAssistant = function() {
         <div class="empty-state-icon">✉️</div>
         <div class="empty-state-title">No plan for today</div>
         <div class="empty-state-desc">Generate a daily plan first — then come back here to post step by step.</div>
-        <button class="btn btn-primary btn-lg" onclick="Views.generatePlanNow();App.navigate('assistant')">📅 Generate Plan First</button>
+        <button class="btn btn-primary btn-lg" onclick="Views.generatePlanNow();setTimeout(()=>App.navigate('assistant'),400)">📅 Generate Plan First</button>
       </div>`;
     return;
   }
@@ -846,10 +861,12 @@ Views.renderAssistant = function() {
     return;
   }
 
-  const current = pending[0];
-  const totalDone = done.length;
-  const total = flat.length;
-  const pct = Math.round(totalDone/total*100);
+  const current    = pending[0];
+  const totalDone  = done.length;
+  const total      = flat.length;
+  const pct        = Math.round(totalDone/total*100);
+  const langLabels = { en: '🇬🇧 English', nl: '🇳🇱 Dutch', es: '🇪🇸 Spanish' };
+  const postLabel  = `Post ${totalDone+1} of ${total} · ${langLabels[current.language] || (current.language||'').toUpperCase()}`;
 
   el.innerHTML = `
     <div class="page-header">
@@ -871,7 +888,7 @@ Views.renderAssistant = function() {
       <div class="posting-step">
         <div class="posting-step-header">
           <div>
-            <div class="posting-step-progress">Post ${totalDone+1} of ${total} · ${current.session==='morning'?'🌅 Morning':'🌙 Evening'} Session</div>
+            <div class="posting-step-progress">${postLabel}</div>
             <div class="posting-step-num">${escHtml(current.groupName)}</div>
           </div>
           <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
@@ -880,17 +897,14 @@ Views.renderAssistant = function() {
         </div>
         <div class="posting-step-body">
           <div class="posting-step-url">🔗 <a href="${escHtml(current.groupUrl)}" target="_blank" rel="noopener">${escHtml(current.groupUrl)}</a></div>
-
           <div style="margin:14px 0 6px;font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Suggested Post Text</div>
           <div class="posting-text-box" id="postingTextBox">${escHtml(current.text)}</div>
-
           <div class="posting-actions">
             <button class="btn btn-primary" id="copyBtn" onclick="Views.copyPostText()">📋 Copy Text</button>
             <a class="btn btn-sea" href="${escHtml(current.groupUrl)}" target="_blank" rel="noopener">🔗 Open Group</a>
             <button class="btn btn-success" onclick="Views.markCurrentDone()">✅ Mark as Posted</button>
             <button class="btn btn-ghost" onclick="Views.skipCurrent()">⏭ Skip</button>
           </div>
-
           <div class="alert alert-info" style="margin-top:16px">
             <span>💡 <strong>Manual step:</strong> Copy the text → Open the group → Paste and post manually → Come back and click <strong>Mark as Posted</strong>.</span>
           </div>
@@ -912,9 +926,9 @@ Views.renderAssistant = function() {
       </div>` : ''}
     </div>`;
 
-  // Store current item reference for actions
   Views._currentPlanItem = current;
 };
+
 
 Views.copyPostText = function() {
   const item = Views._currentPlanItem;
@@ -1056,17 +1070,23 @@ Views.renderSettings = function() {
       <h3>📅 Planning Preferences</h3>
       <div class="settings-row">
         <div>
+          <div class="settings-row-label">Daily Mode</div>
+          <div class="settings-row-desc">Conservative: 1 EN + 1 NL post per day (recommended for safe, steady marketing). Standard: up to 6 posts per day.</div>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;white-space:nowrap">
+          <input type="checkbox" id="conservativeToggle" ${settings.conservativeMode !== false ? 'checked' : ''}
+            onchange="Views.saveConservativeMode(this.checked)" style="width:16px;height:16px;cursor:pointer">
+          <span style="font-size:13px;font-weight:600;color:var(--brand-teal)">
+            ${settings.conservativeMode !== false ? '🛡️ Conservative (2/day)' : '⚡ Standard (up to 6/day)'}
+          </span>
+        </label>
+      </div>
+      <div class="settings-row">
+        <div>
           <div class="settings-row-label">Group Cooldown Period</div>
           <div class="settings-row-desc">Minimum days before reposting to the same group (currently: 3 days).</div>
         </div>
         <span class="badge badge-orange">3 days</span>
-      </div>
-      <div class="settings-row">
-        <div>
-          <div class="settings-row-label">Posts Per Session</div>
-          <div class="settings-row-desc">Morning: up to 3 posts. Evening: up to 3 posts. Total: up to 6/day.</div>
-        </div>
-        <span class="badge badge-teal">6 per day</span>
       </div>
     </div>
 
@@ -1131,6 +1151,14 @@ Views.saveGptKey = function() {
   const key = document.getElementById('gptKey').value.trim();
   Store.saveSettings({ gptApiKey: key });
   App.toast('API key saved locally.', 'success');
+};
+
+Views.saveConservativeMode = function(checked) {
+  Store.saveSettings({ conservativeMode: checked });
+  const label = checked ? '🛡️ Conservative (2/day)' : '⚡ Standard (up to 6/day)';
+  const span = document.querySelector('#conservativeToggle + span');
+  if (span) span.textContent = label;
+  App.toast(checked ? 'Conservative mode ON — 1 EN + 1 NL per day.' : 'Standard mode ON — up to 6 posts per day.', 'info');
 };
 
 Views.doExportBackup = function() {

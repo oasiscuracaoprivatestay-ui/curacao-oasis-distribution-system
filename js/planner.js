@@ -17,9 +17,12 @@ const Planner = (() => {
   /* ── How many days before we can repost to same group ── */
   const GROUP_COOLDOWN_DAYS = 3;
 
-  /* ── Max posts per day ── */
-  const MAX_MORNING  = 3;
-  const MAX_EVENING  = 3;
+  /* ── Standard mode limits ── */
+  const MAX_MORNING = 3;
+  const MAX_EVENING = 3;
+
+  /* ── Conservative mode: one post per language per day ── */
+  const CONSERVATIVE_LANGS = ['en', 'nl'];
 
   /* ── Utility ── */
   function today() {
@@ -110,76 +113,123 @@ const Planner = (() => {
 
   /**
    * Generate a daily posting plan.
-   * @param {string} date - ISO date string (YYYY-MM-DD), defaults to today
-   * @returns {Object} { date, morning: [...], evening: [...] }
+   * Checks settings.conservativeMode (default true) to pick between:
+   *   Conservative: exactly 1 EN + 1 NL post, LRU content rotation
+   *   Standard: up to 3 morning + 3 evening posts (original logic)
+   * localStorage structure (morning/evening arrays) is preserved either way.
    */
   function generatePlan(date) {
-    const planDate = date || today();
-    const contents = Store.getContent().filter(c => c.status === 'ready');
-    const groups   = Store.getGroups();
-    const logs     = Store.getLogs();
+    const planDate   = date || today();
+    const settings   = Store.getSettings();
+    const conservative = settings.conservativeMode !== false; // default ON
+    const contents   = Store.getContent().filter(c => c.status === 'ready');
+    const groups     = Store.getGroups();
+    const logs       = Store.getLogs();
 
-    if (contents.length === 0 || groups.length === 0) {
-      return { date: planDate, morning: [], evening: [], generated: new Date().toISOString() };
+    const empty = { date: planDate, morning: [], evening: [], generated: new Date().toISOString(), mode: conservative ? 'conservative' : 'standard' };
+    if (contents.length === 0 || groups.length === 0) { Store.savePlan(empty); return empty; }
+
+    return conservative
+      ? _conservativePlan(planDate, contents, groups, logs)
+      : _standardPlan(planDate, contents, groups, logs);
+  }
+
+  /* ── Conservative: exactly 1 EN post + 1 NL post ── */
+  function _conservativePlan(planDate, contents, groups, logs) {
+    // Same-day deduplication from logs already recorded today
+    const todayLogs      = logs.filter(l => l.postedAt && l.postedAt.startsWith(planDate));
+    const usedContentIds = new Set(todayLogs.map(l => l.contentId));
+    const usedGroupIds   = new Set(todayLogs.map(l => l.groupId));
+
+    // Build last-used map per content ID for rotation
+    const lastUsedMap = {};
+    for (const log of logs) {
+      if (!lastUsedMap[log.contentId] || log.postedAt > lastUsedMap[log.contentId]) {
+        lastUsedMap[log.contentId] = log.postedAt;
+      }
     }
 
-    const matches = matchContentToGroups(contents, groups);
+    function pickContent(lang) {
+      const candidates = contents.filter(c => c.language === lang && !usedContentIds.has(c.id));
+      if (!candidates.length) return null;
+      // LRU: least recently used first; never-used items get priority ('0' sorts first)
+      return candidates.sort((a, b) => {
+        const ta = lastUsedMap[a.id] || '0';
+        const tb = lastUsedMap[b.id] || '0';
+        return ta < tb ? -1 : 1;
+      })[0];
+    }
 
+    function pickGroup(lang) {
+      const candidates = groups.filter(g => g.language === lang && !usedGroupIds.has(g.id));
+      if (!candidates.length) return null;
+      // Prefer groups not posted to recently
+      return candidates.sort((a, b) => {
+        const ta = a.lastPostedAt || '0';
+        const tb = b.lastPostedAt || '0';
+        return ta < tb ? -1 : 1;
+      })[0];
+    }
+
+    function buildItem(lang) {
+      const content = pickContent(lang);
+      const group   = pickGroup(lang);
+      if (!content || !group) return null;
+      usedContentIds.add(content.id);
+      usedGroupIds.add(group.id);
+      return {
+        contentId:    content.id,
+        contentTitle: content.title,
+        groupId:      group.id,
+        groupName:    group.name,
+        groupUrl:     group.url,
+        language:     lang,
+        type:         content.type,
+        text:         pickBestText(content, logs),
+        done:         false
+      };
+    }
+
+    // EN in morning slot, NL in evening slot — keeps getFlatPlan/markItemDone working
+    const enItem = buildItem('en');
+    const nlItem = buildItem('nl');
+
+    const plan = {
+      date:      planDate,
+      morning:   enItem ? [enItem] : [],
+      evening:   nlItem ? [nlItem] : [],
+      generated: new Date().toISOString(),
+      mode:      'conservative'
+    };
+    Store.savePlan(plan);
+    return plan;
+  }
+
+  /* ── Standard: up to 3 morning + 3 evening (original logic) ── */
+  function _standardPlan(planDate, contents, groups, logs) {
+    const matches        = matchContentToGroups(contents, groups);
     const usedGroupIds   = new Set();
     const usedContentIds = new Set();
     const morning = [];
     const evening = [];
 
-    // Fill morning slots
     for (const match of matches) {
       if (morning.length >= MAX_MORNING) break;
       if (usedGroupIds.has(match.group.id)) continue;
-
       const text = pickBestText(match.content, logs);
-      morning.push({
-        contentId:    match.content.id,
-        contentTitle: match.content.title,
-        groupId:      match.group.id,
-        groupName:    match.group.name,
-        groupUrl:     match.group.url,
-        language:     match.content.language,
-        type:         match.content.type,
-        text,
-        session:      'morning',
-        done:         false
-      });
+      morning.push({ contentId: match.content.id, contentTitle: match.content.title, groupId: match.group.id, groupName: match.group.name, groupUrl: match.group.url, language: match.content.language, type: match.content.type, text, done: false });
       usedGroupIds.add(match.group.id);
       usedContentIds.add(match.content.id);
     }
-
-    // Fill evening slots — prefer different content AND different groups
     for (const match of matches) {
       if (evening.length >= MAX_EVENING) break;
       if (usedGroupIds.has(match.group.id)) continue;
-
       const text = pickBestText(match.content, logs);
-      evening.push({
-        contentId:    match.content.id,
-        contentTitle: match.content.title,
-        groupId:      match.group.id,
-        groupName:    match.group.name,
-        groupUrl:     match.group.url,
-        language:     match.content.language,
-        type:         match.content.type,
-        text,
-        session:      'evening',
-        done:         false
-      });
+      evening.push({ contentId: match.content.id, contentTitle: match.content.title, groupId: match.group.id, groupName: match.group.name, groupUrl: match.group.url, language: match.content.language, type: match.content.type, text, done: false });
       usedGroupIds.add(match.group.id);
     }
 
-    const plan = {
-      date: planDate,
-      morning,
-      evening,
-      generated: new Date().toISOString()
-    };
-
+    const plan = { date: planDate, morning, evening, generated: new Date().toISOString(), mode: 'standard' };
     Store.savePlan(plan);
     return plan;
   }
